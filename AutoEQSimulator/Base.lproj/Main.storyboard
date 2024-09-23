@@ -709,7 +709,7 @@
                         <rect key="frame" x="0.0" y="0.0" width="480" height="270"/>
                         <autoresizingMask key="autoresizingMask"/>
                         <subviews>
-                            <textField horizontalHuggingPriority="251" verticalHuggingPriority="750" fixedFrame="YES" translatesAutoresizingMaskIntoConstraints="NO" id="TTS-VG-Y1h">
+                            <textField focusRingType="none" horizontalHuggingPriority="251" verticalHuggingPriority="750" fixedFrame="YES" translatesAutoresizingMaskIntoConstraints="NO" id="TTS-VG-Y1h">
                                 <rect key="frame" x="115" y="20" width="250" height="16"/>
                                 <autoresizingMask key="autoresizingMask" flexibleMaxX="YES" flexibleMinY="YES"/>
                                 <textFieldCell key="cell" lineBreakMode="clipping" alignment="center" id="c3W-tM-Izn">
@@ -718,8 +718,8 @@
                                     <color key="backgroundColor" name="textBackgroundColor" catalog="System" colorSpace="catalog"/>
                                 </textFieldCell>
                             </textField>
-                            <comboBox verticalHuggingPriority="750" fixedFrame="YES" translatesAutoresizingMaskIntoConstraints="NO" id="b5l-1F-BRW">
-                                <rect key="frame" x="116" y="190" width="250" height="23"/>
+                            <comboBox focusRingType="none" verticalHuggingPriority="750" fixedFrame="YES" translatesAutoresizingMaskIntoConstraints="NO" id="b5l-1F-BRW">
+                                <rect key="frame" x="116" y="211" width="250" height="23"/>
                                 <autoresizingMask key="autoresizingMask" flexibleMaxX="YES" flexibleMinY="YES"/>
                                 <comboBoxCell key="cell" scrollable="YES" lineBreakMode="clipping" selectable="YES" editable="YES" sendsActionOnEndEditing="YES" borderStyle="bezel" placeholderString="Your Headphones Model" bezelStyle="round" usesDataSource="YES" numberOfVisibleItems="5" id="wYV-ox-c5r">
                                     <font key="font" metaFont="system"/>
@@ -727,8 +727,8 @@
                                     <color key="backgroundColor" name="textBackgroundColor" catalog="System" colorSpace="catalog"/>
                                 </comboBoxCell>
                             </comboBox>
-                            <comboBox verticalHuggingPriority="750" fixedFrame="YES" translatesAutoresizingMaskIntoConstraints="NO" id="ZGY-m1-R3y">
-                                <rect key="frame" x="116" y="123" width="250" height="23"/>
+                            <comboBox focusRingType="none" verticalHuggingPriority="750" fixedFrame="YES" translatesAutoresizingMaskIntoConstraints="NO" id="ZGY-m1-R3y">
+                                <rect key="frame" x="116" y="163" width="250" height="23"/>
                                 <autoresizingMask key="autoresizingMask" flexibleMaxX="YES" flexibleMinY="YES"/>
                                 <comboBoxCell key="cell" scrollable="YES" lineBreakMode="clipping" selectable="YES" editable="YES" sendsActionOnEndEditing="YES" borderStyle="bezel" placeholderString="Target Headphones Model" bezelStyle="round" usesDataSource="YES" numberOfVisibleItems="5" id="l7I-e0-2bT">
                                     <font key="font" metaFont="system"/>
@@ -747,6 +747,15 @@
                                     <action selector="stopEQButtonClicked:" target="XfG-lQ-9wD" id="qx3-wx-bzt"/>
                                 </connections>
                             </button>
+                            <comboBox focusRingType="none" verticalHuggingPriority="750" fixedFrame="YES" translatesAutoresizingMaskIntoConstraints="NO" id="tXI-8Z-93j">
+                                <rect key="frame" x="116" y="115" width="250" height="23"/>
+                                <autoresizingMask key="autoresizingMask" flexibleMaxX="YES" flexibleMinY="YES"/>
+                                <comboBoxCell key="cell" scrollable="YES" lineBreakMode="clipping" selectable="YES" editable="YES" sendsActionOnEndEditing="YES" borderStyle="bezel" placeholderString="Output Devices" bezelStyle="round" usesDataSource="YES" numberOfVisibleItems="5" id="d6g-PQ-LiK">
+                                    <font key="font" metaFont="system"/>
+                                    <color key="textColor" name="controlTextColor" catalog="System" colorSpace="catalog"/>
+                                    <color key="backgroundColor" name="textBackgroundColor" catalog="System" colorSpace="catalog"/>
+                                </comboBoxCell>
+                            </comboBox>
                             <button verticalHuggingPriority="750" fixedFrame="YES" translatesAutoresizingMaskIntoConstraints="NO" id="NBH-7Z-iy5">
                                 <rect key="frame" x="122" y="60" width="90" height="32"/>
                                 <autoresizingMask key="autoresizingMask" flexibleMaxX="YES" flexibleMinY="YES"/>
@@ -762,6 +771,7 @@
                     </view>
                     <connections>
                         <outlet property="myHeadphoneModelComboBox" destination="b5l-1F-BRW" id="sZv-cO-QX2"/>
+                        <outlet property="outputDeviceComboBox" destination="tXI-8Z-93j" id="vWL-m1-ENh"/>
                         <outlet property="statusLabel" destination="TTS-VG-Y1h" id="BgJ-bl-Hfi"/>
                         <outlet property="targetHeadphoneModelComboBox" destination="ZGY-m1-R3y" id="f06-lr-RBZ"/>
                     </connections>
