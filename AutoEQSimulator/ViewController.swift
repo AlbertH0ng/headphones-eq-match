@@ -6,8 +6,7 @@
 //
 
 import Cocoa
-import AVFoundation
-
+import AudioToolbox
 
 struct EQPoint {
     let frequency: Double
@@ -23,7 +22,6 @@ struct AudioDevice {
 }
 
 
-
 class ViewController: NSViewController, NSComboBoxDataSource, NSComboBoxDelegate, NSControlTextEditingDelegate {
     
     @IBOutlet weak var myHeadphoneModelComboBox: NSComboBox!
@@ -31,12 +29,15 @@ class ViewController: NSViewController, NSComboBoxDataSource, NSComboBoxDelegate
     @IBOutlet weak var outputDeviceComboBox: NSComboBox!
     @IBOutlet weak var statusLabel: NSTextField!
     
-    let audioEngine = AVAudioEngine()
+    var audioGraph: AUGraph?
+    var eqUnit: AudioUnit?
+    var outputUnit: AudioUnit?
+    
+    
     var headphoneModels: [String] = []
     var myFilteredHeadphoneModels: [String] = []
     var targetFilteredHeadphoneModels: [String] = []
     
-    var eqNode: AVAudioUnitEQ!
     var outputDevices: [AudioDevice] = []
     var selectedOutputDeviceID: AudioDeviceID?
     
@@ -58,8 +59,6 @@ class ViewController: NSViewController, NSComboBoxDataSource, NSComboBoxDelegate
         getAvailableOutputDevices()
         outputDeviceComboBox.delegate = self
         outputDeviceComboBox.dataSource = self // Ensure dataSource is set
-        
-
     }
     
     // MARK: - NSComboBoxDataSource Methods
@@ -167,13 +166,9 @@ class ViewController: NSViewController, NSComboBoxDataSource, NSComboBoxDelegate
     }
     
     @IBAction func stopEQButtonClicked(_ sender: Any) {
-        if audioEngine.isRunning {
-            audioEngine.stop()
-            audioEngine.reset()
-        }
+        stopAudioGraph()
         statusLabel.stringValue = "EQ settings have been stopped."
     }
-
     
     // MARK: - Data Loading
     
@@ -197,8 +192,6 @@ class ViewController: NSViewController, NSComboBoxDataSource, NSComboBoxDelegate
                     headphoneModels.append(modelName)
                 }
             }
-            
-            // print("Loaded headphone models: \(headphoneModels)") Too many models
             
             // Initialize filtered arrays
             myFilteredHeadphoneModels = headphoneModels
@@ -414,30 +407,445 @@ class ViewController: NSViewController, NSComboBoxDataSource, NSComboBoxDelegate
         return combinedEQ
     }
     
-    func createOutputAudioUnit(completion: @escaping (AVAudioUnit?) -> Void) {
-        let outputComponentDescription = AudioComponentDescription(
-            componentType: kAudioUnitType_Output,
-            componentSubType: kAudioUnitSubType_HALOutput,
-            componentManufacturer: kAudioUnitManufacturer_Apple,
-            componentFlags: 0,
-            componentFlagsMask: 0
-        )
-
-        AVAudioUnit.instantiate(with: outputComponentDescription, options: []) { (audioUnit, error) in
-            if let error = error {
-                print("Error instantiating custom output audio unit: \(error)")
-                completion(nil)
-                return
+    // MARK: - Audio Graph Setup and Control
+    
+    func initializeAUGraph() {
+        var status = NewAUGraph(&audioGraph)
+        if status != noErr {
+            printError("creating AUGraph", error: status)
+        }
+    }
+    
+    var outputAudioUnit: AudioUnit?
+    
+    func startOutputUnit() {
+        if let outputAudioUnit = outputAudioUnit {
+            let status = AudioOutputUnitStart(outputAudioUnit)
+            if status != noErr {
+                printError("starting output audio unit", error: status)
             }
-            completion(audioUnit)
         }
     }
 
     
-    func setOutputDevice(for audioUnit: AVAudioUnit, deviceID: AudioDeviceID) -> Bool {
+    func setupAUGraph(eqData: [EQPoint], preampValue: Double) {
+        guard let audioGraph = audioGraph else { return }
+        
+        var status: OSStatus = noErr
+        
+        // **Input Unit Description**
+        var inputDesc = AudioComponentDescription(
+            componentType: kAudioUnitType_Output,
+            componentSubType: kAudioUnitSubType_HALOutput, // For input unit
+            componentManufacturer: kAudioUnitManufacturer_Apple,
+            componentFlags: 0,
+            componentFlagsMask: 0
+        )
+        
+        // **EQ Unit Description**
+        var eqDesc = AudioComponentDescription(
+            componentType: kAudioUnitType_Effect,
+            componentSubType: kAudioUnitSubType_NBandEQ,
+            componentManufacturer: kAudioUnitManufacturer_Apple,
+            componentFlags: 0,
+            componentFlagsMask: 0
+        )
+        
+        // **Output Unit Description**
+        var outputDesc = AudioComponentDescription(
+            componentType: kAudioUnitType_Output,
+            componentSubType: kAudioUnitSubType_HALOutput, // For output unit
+            componentManufacturer: kAudioUnitManufacturer_Apple,
+            componentFlags: 0,
+            componentFlagsMask: 0
+        )
+        
+        var inputNode = AUNode()
+        var eqNode = AUNode()
+        var outputNode = AUNode()
+        
+        // **Add Nodes to the Graph**
+        status = AUGraphAddNode(audioGraph, &inputDesc, &inputNode)
+        if status != noErr {
+            printError("adding Input node", error: status)
+            return
+        }
+        
+        status = AUGraphAddNode(audioGraph, &eqDesc, &eqNode)
+        if status != noErr {
+            printError("adding EQ node", error: status)
+            return
+        }
+        
+        status = AUGraphAddNode(audioGraph, &outputDesc, &outputNode)
+        if status != noErr {
+            printError("adding Output node", error: status)
+            return
+        }
+        
+        // **Open the Graph**
+        status = AUGraphOpen(audioGraph)
+        if status != noErr {
+            printError("opening AUGraph", error: status)
+            return
+        }
+        
+        // **Get Audio Unit Instances from Nodes**
+        var inputUnit: AudioUnit?
+        status = AUGraphNodeInfo(audioGraph, inputNode, nil, &inputUnit)
+        if status != noErr {
+            printError("getting Input unit from node", error: status)
+            return
+        }
+        
+        status = AUGraphNodeInfo(audioGraph, eqNode, nil, &eqUnit)
+        if status != noErr {
+            printError("getting EQ unit from node", error: status)
+            return
+        }
+        
+        status = AUGraphNodeInfo(audioGraph, outputNode, nil, &outputUnit)
+        if status != noErr {
+            printError("getting Output unit from node", error: status)
+            return
+        }
+        
+        // **Configure Input Unit**
+        // Enable input on the input unit (element 1)
+        var enableIO: UInt32 = 1
+        status = AudioUnitSetProperty(
+            inputUnit!,
+            kAudioOutputUnitProperty_EnableIO,
+            kAudioUnitScope_Input,
+            1, // Input Element
+            &enableIO,
+            UInt32(MemoryLayout<UInt32>.size)
+        )
+        if status != noErr {
+            printError("enabling input on input unit", error: status)
+            return
+        }
+        
+        // Disable output on the input unit (element 0)
+        var disableIO: UInt32 = 0
+        status = AudioUnitSetProperty(
+            inputUnit!,
+            kAudioOutputUnitProperty_EnableIO,
+            kAudioUnitScope_Output,
+            0, // Output Element
+            &disableIO,
+            UInt32(MemoryLayout<UInt32>.size)
+        )
+        if status != noErr {
+            printError("disabling output on input unit", error: status)
+            return
+        }
+        
+        // Set the Input Device to BlackHole
+        var inputDeviceID = AudioDeviceID(kAudioObjectUnknown)
+        var propertySize = UInt32(MemoryLayout<AudioDeviceID>.size)
+        var defaultInputDeviceProperty = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultInputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        status = AudioObjectGetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject),
+            &defaultInputDeviceProperty,
+            0,
+            nil,
+            &propertySize,
+            &inputDeviceID
+        )
+        if status != noErr {
+            printError("getting default input device", error: status)
+            return
+        }
+        
+        status = AudioUnitSetProperty(
+            inputUnit!,
+            kAudioOutputUnitProperty_CurrentDevice,
+            kAudioUnitScope_Global,
+            0,
+            &inputDeviceID,
+            UInt32(MemoryLayout<AudioDeviceID>.size)
+        )
+        if status != noErr {
+            printError("setting input device", error: status)
+            return
+        }
+        
+        // **Configure Output Unit**
+        // Enable output on the output unit (element 0)
+        status = AudioUnitSetProperty(
+            outputUnit!,
+            kAudioOutputUnitProperty_EnableIO,
+            kAudioUnitScope_Output,
+            0, // Output Element
+            &enableIO,
+            UInt32(MemoryLayout<UInt32>.size)
+        )
+        if status != noErr {
+            printError("enabling output on output unit", error: status)
+            return
+        }
+        
+        // Disable input on the output unit (element 1)
+        status = AudioUnitSetProperty(
+            outputUnit!,
+            kAudioOutputUnitProperty_EnableIO,
+            kAudioUnitScope_Input,
+            1, // Input Element
+            &disableIO,
+            UInt32(MemoryLayout<UInt32>.size)
+        )
+        if status != noErr {
+            printError("disabling input on output unit", error: status)
+            return
+        }
+        
+        // Set the Output Device to Selected Device
+        if let deviceID = selectedOutputDeviceID {
+            var deviceID = deviceID
+            status = AudioUnitSetProperty(
+                outputUnit!,
+                kAudioOutputUnitProperty_CurrentDevice,
+                kAudioUnitScope_Global,
+                0,
+                &deviceID,
+                UInt32(MemoryLayout<AudioDeviceID>.size)
+            )
+            if status != noErr {
+                printError("setting output device", error: status)
+                return
+            }
+        } else {
+            print("No output device selected")
+            return
+        }
+        
+        // **Configure the EQ Unit**
+        configureEQUnit(eqUnit: eqUnit!, eqData: eqData, preampValue: preampValue)
+        
+        // **Set Stream Formats**
+        // Get the hardware stream format from the input unit
+        var streamFormat = AudioStreamBasicDescription()
+        propertySize = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
+        status = AudioUnitGetProperty(
+            inputUnit!,
+            kAudioUnitProperty_StreamFormat,
+            kAudioUnitScope_Output,
+            1, // Input Element
+            &streamFormat,
+            &propertySize
+        )
+        if status != noErr {
+            printError("getting stream format from input unit", error: status)
+            return
+        }
+        
+        // Set stream format on EQ unit input
+        status = AudioUnitSetProperty(
+            eqUnit!,
+            kAudioUnitProperty_StreamFormat,
+            kAudioUnitScope_Input,
+            0,
+            &streamFormat,
+            UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
+        )
+        if status != noErr {
+            printError("setting stream format on EQ unit input", error: status)
+            return
+        }
+        
+        // Set stream format on EQ unit output
+        status = AudioUnitSetProperty(
+            eqUnit!,
+            kAudioUnitProperty_StreamFormat,
+            kAudioUnitScope_Output,
+            0,
+            &streamFormat,
+            UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
+        )
+        if status != noErr {
+            printError("setting stream format on EQ unit output", error: status)
+            return
+        }
+        
+        // Set stream format on output unit input
+        status = AudioUnitSetProperty(
+            outputUnit!,
+            kAudioUnitProperty_StreamFormat,
+            kAudioUnitScope_Input,
+            0,
+            &streamFormat,
+            UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
+        )
+        if status != noErr {
+            printError("setting stream format on output unit input", error: status)
+            return
+        }
+        
+        // **Connect the Nodes**
+        status = AUGraphConnectNodeInput(audioGraph, inputNode, 1, eqNode, 0)
+        if status != noErr {
+            printError("connecting Input node to EQ node", error: status)
+            return
+        }
+        
+        status = AUGraphConnectNodeInput(audioGraph, eqNode, 0, outputNode, 0)
+        if status != noErr {
+            printError("connecting EQ node to Output node", error: status)
+            return
+        }
+        
+        // **Initialize the Graph**
+        status = AUGraphInitialize(audioGraph)
+        if status != noErr {
+            printError("initializing AUGraph", error: status)
+            return
+        }
+    }
+
+
+
+    func osTypeString(_ error: OSStatus) -> String {
+        let n = UInt32(bitPattern: error)
+        let bytes: [CChar] = [
+            CChar(bitPattern: UInt8((n >> 24) & 0xFF)),
+            CChar(bitPattern: UInt8((n >> 16) & 0xFF)),
+            CChar(bitPattern: UInt8((n >> 8) & 0xFF)),
+            CChar(bitPattern: UInt8(n & 0xFF)),
+            0
+        ]
+        if isprint(Int32(bytes[0])) != 0 && isprint(Int32(bytes[1])) != 0 &&
+           isprint(Int32(bytes[2])) != 0 && isprint(Int32(bytes[3])) != 0 {
+            return String(cString: bytes)
+        } else {
+            return "\(error)"
+        }
+    }
+
+    
+    func printError(_ operation: String, error: OSStatus) {
+        let errorString = String(format: "%d (or 0x%X): %@", error, error, osTypeString(error))
+        print("Error during \(operation): \(errorString)")
+    }
+
+
+    
+
+    
+    func configureEQUnit(eqUnit: AudioUnit, eqData: [EQPoint], preampValue: Double) {
+        var status: OSStatus = noErr
+        
+        // Set number of bands
+        var numBands: UInt32 = UInt32(eqData.count)
+        status = AudioUnitSetProperty(eqUnit,
+                                      kAUNBandEQProperty_NumberOfBands,
+                                      kAudioUnitScope_Global,
+                                      0,
+                                      &numBands,
+                                      UInt32(MemoryLayout<UInt32>.size))
+        if status != noErr {
+            print("Error setting number of bands: \(status)")
+            return
+        }
+        
+        for (index, eqPoint) in eqData.enumerated() {
+            let bandIndex = UInt32(index)
+            
+            // Enable the band
+            let bypass: UInt32 = 0 // 0 means enabled
+            status = AudioUnitSetParameter(eqUnit,
+                                           kAUNBandEQParam_BypassBand + bandIndex,
+                                           kAudioUnitScope_Global,
+                                           0,
+                                           Float(bypass),
+                                           0)
+            if status != noErr {
+                print("Error enabling band \(bandIndex): \(status)")
+                continue
+            }
+            
+            // Set filter type
+            var filterType: UInt32
+            switch eqPoint.filterType {
+            case "PK":
+                filterType = UInt32(kAUNBandEQFilterType_Parametric)
+            case "LSC":
+                filterType = UInt32(kAUNBandEQFilterType_LowShelf)
+            case "HSC":
+                filterType = UInt32(kAUNBandEQFilterType_HighShelf)
+            default:
+                filterType = UInt32(kAUNBandEQFilterType_Parametric)
+            }
+            
+            status = AudioUnitSetParameter(eqUnit,
+                                           kAUNBandEQParam_FilterType + bandIndex,
+                                           kAudioUnitScope_Global,
+                                           0,
+                                           Float(filterType),
+                                           0)
+            if status != noErr {
+                print("Error setting filter type for band \(bandIndex): \(status)")
+                continue
+            }
+            
+            // Set frequency
+            status = AudioUnitSetParameter(eqUnit,
+                                           kAUNBandEQParam_Frequency + bandIndex,
+                                           kAudioUnitScope_Global,
+                                           0,
+                                           Float(eqPoint.frequency),
+                                           0)
+            if status != noErr {
+                print("Error setting frequency for band \(bandIndex): \(status)")
+                continue
+            }
+            
+            // Set gain
+            status = AudioUnitSetParameter(eqUnit,
+                                           kAUNBandEQParam_Gain + bandIndex,
+                                           kAudioUnitScope_Global,
+                                           0,
+                                           Float(eqPoint.gain),
+                                           0)
+            if status != noErr {
+                print("Error setting gain for band \(bandIndex): \(status)")
+                continue
+            }
+            
+            // Set bandwidth (Q-factor)
+            status = AudioUnitSetParameter(eqUnit,
+                                           kAUNBandEQParam_Bandwidth + bandIndex,
+                                           kAudioUnitScope_Global,
+                                           0,
+                                           Float(1.0 / eqPoint.qFactor),
+                                           0)
+            if status != noErr {
+                print("Error setting bandwidth for band \(bandIndex): \(status)")
+                continue
+            }
+        }
+        
+        // Set global gain (preamp)
+        status = AudioUnitSetParameter(eqUnit,
+                                       kAUNBandEQParam_GlobalGain,
+                                       kAudioUnitScope_Global,
+                                       0,
+                                       Float(preampValue),
+                                       0)
+        if status != noErr {
+            print("Error setting global gain: \(status)")
+        }
+    }
+    
+    func setOutputDevice(deviceID: AudioDeviceID) {
+        guard let outputUnit = outputUnit else { return }
         var deviceID = deviceID
         let status = AudioUnitSetProperty(
-            audioUnit.audioUnit,
+            outputUnit,
             kAudioOutputUnitProperty_CurrentDevice,
             kAudioUnitScope_Global,
             0,
@@ -446,51 +854,37 @@ class ViewController: NSViewController, NSComboBoxDataSource, NSComboBoxDelegate
         )
         if status != noErr {
             print("Error setting output device: \(status)")
-            return false
         }
-        return true
     }
 
-
-
+    func startAudioGraph() {
+        guard let audioGraph = audioGraph else { return }
+        let status = AUGraphStart(audioGraph)
+        if status != noErr {
+            print("Error starting AUGraph: \(status)")
+        }
+    }
     
-    func configureEQNode(eqNode: AVAudioUnitEQ, with eqData: [EQPoint], preampValue: Double) {
-        for (index, eqPoint) in eqData.enumerated() {
-            if index >= eqNode.bands.count {
-                break
-            }
-            let band = eqNode.bands[index]
-
-            // Set filter type based on eqPoint.filterType
-            switch eqPoint.filterType {
-            case "PK":
-                band.filterType = .parametric
-            case "LSC":
-                band.filterType = .lowShelf
-            case "HSC":
-                band.filterType = .highShelf
-            default:
-                band.filterType = .parametric
-            }
-
-            band.frequency = Float(eqPoint.frequency)
-            band.gain = Float(eqPoint.gain)
-
-            // Set bandwidth in octaves
-            band.bandwidth = Float(1.0 / eqPoint.qFactor)
-
-            band.bypass = false
+    func stopAudioGraph() {
+        if let audioGraph = audioGraph {
+            AUGraphStop(audioGraph)
+            AUGraphUninitialize(audioGraph)
+            AUGraphClose(audioGraph)
+            DisposeAUGraph(audioGraph)
+            self.audioGraph = nil
+            self.eqUnit = nil
+            self.outputUnit = nil
         }
-
-        // Apply preamp value if needed
-        eqNode.globalGain = Float(preampValue)
     }
+
+
 
     
     func applyEQSettings() {
         let myModel = myHeadphoneModelComboBox.stringValue
         let targetModel = targetHeadphoneModelComboBox.stringValue
 
+        // Load EQ data for your headphone model
         guard let (myEQData, myPreamp) = loadEQData(for: myModel) else {
             statusLabel.stringValue = "Your headphone model not found."
             return
@@ -499,6 +893,7 @@ class ViewController: NSViewController, NSComboBoxDataSource, NSComboBoxDelegate
         var combinedEQData = myEQData
         var combinedPreamp = myPreamp
 
+        // If a target model is selected, load and invert its EQ data
         if !targetModel.isEmpty {
             guard let (targetEQData, targetPreamp) = loadEQData(for: targetModel) else {
                 statusLabel.stringValue = "Target headphone model not found."
@@ -509,67 +904,18 @@ class ViewController: NSViewController, NSComboBoxDataSource, NSComboBoxDelegate
             combinedPreamp += targetPreamp
         }
 
-        // Stop and reset the audio engine if it's already running
-        if audioEngine.isRunning {
-            audioEngine.stop()
-            audioEngine.reset()
-        }
+        // Stop the audio graph if it's already running
+        stopAudioGraph()
 
-        // Remove existing nodes
-        for node in audioEngine.attachedNodes {
-            audioEngine.detach(node)
-        }
+        // Initialize and set up the AUGraph
+        initializeAUGraph()
+        setupAUGraph(eqData: combinedEQData, preampValue: combinedPreamp)
 
-        // Create and configure the EQ node
-        eqNode = AVAudioUnitEQ(numberOfBands: combinedEQData.count)
-        configureEQNode(eqNode: eqNode, with: combinedEQData, preampValue: combinedPreamp)
-        audioEngine.attach(eqNode)
+        // Start the audio graph
+        startAudioGraph()
 
-        // Create the custom output audio unit
-        createOutputAudioUnit { [weak self] (outputAudioUnit) in
-            guard let self = self, let outputAudioUnit = outputAudioUnit else {
-                self?.statusLabel.stringValue = "Error creating custom output audio unit."
-                return
-            }
-
-            // Set the output device
-            if let selectedDeviceID = self.selectedOutputDeviceID {
-                if !self.setOutputDevice(for: outputAudioUnit, deviceID: selectedDeviceID) {
-                    self.statusLabel.stringValue = "Error setting output device."
-                    return
-                }
-            } else {
-                self.statusLabel.stringValue = "No output device selected."
-                return
-            }
-
-            self.audioEngine.attach(outputAudioUnit)
-
-            // Get the input node (BlackHole as the system default input)
-            let inputNode = self.audioEngine.inputNode
-
-            // Set the format
-            let format = inputNode.outputFormat(forBus: 0)
-
-            // Connect the nodes
-            self.audioEngine.connect(inputNode, to: self.eqNode, format: format)
-            self.audioEngine.connect(self.eqNode, to: outputAudioUnit, format: format)
-
-            // Start the audio engine
-            do {
-                try self.audioEngine.start()
-                DispatchQueue.main.async {
-                    self.statusLabel.stringValue = "EQ settings applied successfully."
-                }
-            } catch {
-                DispatchQueue.main.async {
-                    self.statusLabel.stringValue = "Error starting audio engine: \(error.localizedDescription)"
-                    print("Error starting audio engine: \(error)")
-                }
-            }
-        }
+        statusLabel.stringValue = "EQ settings applied successfully."
     }
 
 
-    
 }
